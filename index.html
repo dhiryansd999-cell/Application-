@@ -1,754 +1,432 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-  getFirestore, collection, addDoc, onSnapshot, 
-  doc, setDoc, updateDoc, arrayUnion, arrayRemove, getDoc, query, limit
-} from 'firebase/firestore';
-import { 
-  getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  Map as MapIcon, MessageSquare, Trophy, Settings, 
-  Play, Square, ShieldCheck, Zap, User, Send, Navigation2, 
-  Handshake, Camera, Heart, PlusSquare, Image as ImageIcon,
-  CheckCircle2, ChevronRight, Users, Bell, Globe, AlertTriangle, RefreshCw, Loader2,
-  Mail, Phone, Shield
-} from 'lucide-react';
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RunRealm Pro | Fitness Conquest</title>
+    
+    <!-- CDNs -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Leaflet Mapping -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-// --- Firebase Configuration ---
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'run-realm-v1';
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/lucide-react@latest"></script>
 
-// --- Constants ---
-const MAP_TILE_URL = "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png";
-const MIN_DISTANCE_TO_CLAIM = 0.00015; 
-const DEFAULT_COORDS = [51.505, -0.09]; // London
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #0a0a0a; color: white; }
+        .leaflet-container { background: #0f172a !important; }
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
 
-const calculateDistance = (p1, p2) => {
-  if (!p1 || !p2) return 999;
-  return Math.sqrt(Math.pow(p1[0] - p2[0], 2) + Math.pow(p1[1] - p2[1], 2));
-};
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+        const { 
+            Map: MapIcon, MessageSquare, Trophy, Settings, 
+            Play, Square, ShieldCheck, Zap, User, Send, Navigation2, 
+            Handshake, Camera, Heart, PlusSquare, Image: ImageIcon,
+            CheckCircle2, ChevronRight, Users, Bell, Globe, AlertTriangle, RefreshCw, Loader2,
+            Mail, Phone, Shield
+        } = lucide;
 
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [userProfile, setUserProfile] = useState(null);
-  const [activeTab, setActiveTab] = useState('map'); 
-  const [onboardingStep, setOnboardingStep] = useState(0); // 0: Login, 1: Profile, 2: Permissions, 3: App
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  
-  // Game State
-  const [isTracking, setIsTracking] = useState(false);
-  const [currentPath, setCurrentPath] = useState([]);
-  const [userLocation, setUserLocation] = useState(DEFAULT_COORDS);
-  const [territories, setTerritories] = useState([]);
-  const [messages, setMessages] = useState([]);
-  const [moments, setMoments] = useState([]);
-  const [isNearStart, setIsNearStart] = useState(false);
-  const [leafletLoaded, setLeafletLoaded] = useState(false);
-  const [locationError, setLocationError] = useState(null);
-  const [isVirtualMode, setIsVirtualMode] = useState(false);
-  const [isLocating, setIsLocating] = useState(false);
+        // --- Firebase Shim (Since we're in a single file) ---
+        // Note: In a real deployment, replace these imports with actual Firebase SDK modules if preferred.
+        // For this single-file HTML version, we assume the environment provides the global Firebase objects.
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, updateDoc, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
 
-  // Map Refs
-  const mapContainerRef = useRef(null);
-  const mapInstance = useRef(null);
-  const layersRef = useRef({
-    userMarker: null,
-    pathLine: null,
-    previewPolygon: null,
-    territoryLayers: []
-  });
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'run-realm-v1';
 
-  // --- 1. Authentication & Profile ---
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      if (u) {
-        setUser(u);
-        const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', u.uid);
-        onSnapshot(userRef, (docSnap) => {
-          if (docSnap.exists()) {
-            setUserProfile(docSnap.data());
-            setOnboardingStep(3); // Already has a profile, skip to app
-          } else {
-            setUserProfile({ newUser: true });
-            // If they just logged in but have no profile, start Step 1 (Profile Creation)
-            if (onboardingStep === 0) setOnboardingStep(1);
-          }
-        }, (err) => console.error("Profile listen error:", err));
-      }
-    });
-    return () => unsubscribe();
-  }, [onboardingStep]);
+        const MAP_TILE_URL = "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png";
+        const MIN_DISTANCE_TO_CLAIM = 0.00015; 
+        const DEFAULT_COORDS = [51.505, -0.09];
 
-  const handleSocialLogin = async (type) => {
-    setIsLoggingIn(true);
-    try {
-      // In this environment, we use the provided auth token or anonymous fallback
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
-      }
-      // Step transition handled by onAuthStateChanged
-    } catch (err) {
-      console.error("Auth error:", err);
-      setIsLoggingIn(false);
-    }
-  };
+        const calculateDistance = (p1, p2) => {
+            if (!p1 || !p2) return 999;
+            return Math.sqrt(Math.pow(p1[0] - p2[0], 2) + Math.pow(p1[1] - p2[1], 2));
+        };
 
-  // --- 2. Real-time Data ---
-  useEffect(() => {
-    if (!user || !userProfile || userProfile.newUser || onboardingStep < 3) return;
+        function App() {
+            const [user, setUser] = useState(null);
+            const [userProfile, setUserProfile] = useState(null);
+            const [activeTab, setActiveTab] = useState('map'); 
+            const [onboardingStep, setOnboardingStep] = useState(0); 
+            const [isLoggingIn, setIsLoggingIn] = useState(false);
+            
+            const [isTracking, setIsTracking] = useState(false);
+            const [currentPath, setCurrentPath] = useState([]);
+            const [userLocation, setUserLocation] = useState(DEFAULT_COORDS);
+            const [territories, setTerritories] = useState([]);
+            const [moments, setMoments] = useState([]);
+            const [isNearStart, setIsNearStart] = useState(false);
+            const [locationError, setLocationError] = useState(null);
+            const [isVirtualMode, setIsVirtualMode] = useState(false);
+            const [isLocating, setIsLocating] = useState(false);
 
-    const unsubT = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'territories'), 
-      (snap) => setTerritories(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-      (err) => console.error("Territory listen error:", err)
-    );
+            const mapContainerRef = useRef(null);
+            const mapInstance = useRef(null);
+            const layersRef = useRef({
+                userMarker: null,
+                pathLine: null,
+                previewPolygon: null,
+                territoryLayers: []
+            });
 
-    const unsubC = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'chats'), 
-      (snap) => {
-        const sorted = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.timestamp - b.timestamp);
-        setMessages(sorted.slice(-30));
-      },
-      (err) => console.error("Chat listen error:", err)
-    );
+            // --- 1. Auth Listener ---
+            useEffect(() => {
+                const unsubscribe = onAuthStateChanged(auth, async (u) => {
+                    if (u) {
+                        setUser(u);
+                        const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', u.uid);
+                        onSnapshot(userRef, (docSnap) => {
+                            if (docSnap.exists()) {
+                                setUserProfile(docSnap.data());
+                                setOnboardingStep(3); 
+                            } else {
+                                setUserProfile({ newUser: true });
+                                if (onboardingStep === 0) setOnboardingStep(1);
+                            }
+                        });
+                    } else {
+                        setUser(null);
+                        setOnboardingStep(0);
+                    }
+                });
+                return () => unsubscribe();
+            }, []);
 
-    const unsubM = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'moments'), 
-      (snap) => {
-        const sorted = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => b.timestamp - a.timestamp);
-        setMoments(sorted);
-      },
-      (err) => console.error("Moments listen error:", err)
-    );
+            const handleSocialLogin = async () => {
+                setIsLoggingIn(true);
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (err) {
+                    console.error("Auth error:", err);
+                } finally {
+                    setIsLoggingIn(false);
+                }
+            };
 
-    return () => { unsubT(); unsubC(); unsubM(); };
-  }, [user, userProfile, onboardingStep]);
+            // --- 2. Real-time Listeners ---
+            useEffect(() => {
+                if (!user || !userProfile || userProfile.newUser || onboardingStep < 3) return;
 
-  // --- 3. Leaflet Logic ---
-  useEffect(() => {
-    if (window.L) { setLeafletLoaded(true); return; }
-    const link = document.createElement('link');
-    link.rel = 'stylesheet'; link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    document.head.appendChild(link);
-    const script = document.createElement('script');
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    script.async = true; script.onload = () => setLeafletLoaded(true);
-    document.head.appendChild(script);
-  }, []);
+                const unsubT = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'territories'), 
+                    (snap) => setTerritories(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+                );
+                const unsubM = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'moments'), 
+                    (snap) => {
+                        const sorted = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => b.timestamp - a.timestamp);
+                        setMoments(sorted);
+                    }
+                );
+                return () => { unsubT(); unsubM(); };
+            }, [user, userProfile, onboardingStep]);
 
-  useEffect(() => {
-    if (!leafletLoaded || !mapContainerRef.current || mapInstance.current || activeTab !== 'map' || onboardingStep < 3) return;
-    const L = window.L;
-    const map = L.map(mapContainerRef.current, { zoomControl: false }).setView(userLocation, 16);
-    L.tileLayer(MAP_TILE_URL).addTo(map);
-    mapInstance.current = map;
+            // --- 3. Leaflet Map Logic ---
+            useEffect(() => {
+                if (!mapContainerRef.current || onboardingStep < 3 || activeTab !== 'map') return;
+                
+                const L = window.L;
+                if (!mapInstance.current) {
+                    const map = L.map(mapContainerRef.current, { zoomControl: false }).setView(userLocation, 16);
+                    L.tileLayer(MAP_TILE_URL).addTo(map);
+                    mapInstance.current = map;
 
-    layersRef.current.userMarker = L.circleMarker(userLocation, {
-      radius: 12, color: '#fff', weight: 4, fillColor: '#6366f1', fillOpacity: 1
-    }).addTo(map);
+                    layersRef.current.userMarker = L.circleMarker(userLocation, {
+                        radius: 12, color: '#fff', weight: 4, fillColor: '#6366f1', fillOpacity: 1
+                    }).addTo(map);
 
-    layersRef.current.pathLine = L.polyline([], { color: '#6366f1', weight: 5, dashArray: '1, 10' }).addTo(map);
-    layersRef.current.previewPolygon = L.polygon([], { color: '#6366f1', fillColor: '#6366f1', fillOpacity: 0.15, weight: 0 }).addTo(map);
+                    layersRef.current.pathLine = L.polyline([], { color: '#6366f1', weight: 5, dashArray: '1, 10' }).addTo(map);
+                    layersRef.current.previewPolygon = L.polygon([], { color: '#6366f1', fillColor: '#6366f1', fillOpacity: 0.15, weight: 0 }).addTo(map);
+                }
 
-    return () => { if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; } };
-  }, [leafletLoaded, activeTab, onboardingStep]);
+                return () => {
+                    if (mapInstance.current) {
+                        mapInstance.current.remove();
+                        mapInstance.current = null;
+                    }
+                };
+            }, [activeTab, onboardingStep]);
 
-  useEffect(() => {
-    if (!mapInstance.current || !leafletLoaded) return;
-    const L = window.L;
-    layersRef.current.userMarker.setLatLng(userLocation);
-    mapInstance.current.panTo(userLocation, { animate: true });
-    layersRef.current.pathLine.setLatLngs(isTracking ? currentPath : []);
-    layersRef.current.previewPolygon.setLatLngs(isTracking && currentPath.length > 2 ? [...currentPath, currentPath[0]] : []);
+            useEffect(() => {
+                if (!mapInstance.current) return;
+                const L = window.L;
+                layersRef.current.userMarker.setLatLng(userLocation);
+                mapInstance.current.panTo(userLocation, { animate: true });
+                layersRef.current.pathLine.setLatLngs(isTracking ? currentPath : []);
+                layersRef.current.previewPolygon.setLatLngs(isTracking && currentPath.length > 2 ? [...currentPath, currentPath[0]] : []);
 
-    layersRef.current.territoryLayers.forEach(l => mapInstance.current.removeLayer(l));
-    layersRef.current.territoryLayers = territories.map(t => {
-      const isOwner = t.owners?.includes(user?.uid);
-      const poly = L.polygon(t.path, {
-        color: isOwner ? '#10b981' : t.color, fillColor: isOwner ? '#10b981' : t.color, fillOpacity: 0.35, weight: isOwner ? 4 : 2
-      }).addTo(mapInstance.current);
-      return poly;
-    });
-  }, [userLocation, currentPath, territories, isTracking, leafletLoaded]);
+                layersRef.current.territoryLayers.forEach(l => mapInstance.current.removeLayer(l));
+                layersRef.current.territoryLayers = territories.map(t => {
+                    const isOwner = t.owners?.includes(user?.uid);
+                    return L.polygon(t.path, {
+                        color: isOwner ? '#10b981' : t.color, fillColor: isOwner ? '#10b981' : t.color, fillOpacity: 0.35, weight: isOwner ? 4 : 2
+                    }).addTo(mapInstance.current);
+                });
+            }, [userLocation, currentPath, territories, isTracking]);
 
-  // --- 4. Handlers ---
-  const handleStart = () => {
-    setCurrentPath([userLocation]);
-    setIsTracking(true);
-  };
+            // --- 4. Handlers ---
+            const requestPermissions = () => {
+                setIsLocating(true);
+                setLocationError(null);
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                            setUserLocation([pos.coords.latitude, pos.coords.longitude]);
+                            setOnboardingStep(3);
+                            setIsLocating(false);
+                        },
+                        (err) => {
+                            setLocationError("GPS access required for real-world tracking. Use Virtual Mode as alternative.");
+                            setIsLocating(false);
+                        },
+                        { timeout: 8000, enableHighAccuracy: true }
+                    );
+                } else {
+                    setLocationError("Geolocation not supported.");
+                    setIsLocating(false);
+                }
+            };
 
-  const handleClaim = async () => {
-    if (currentPath.length < 5 || !user || !userProfile) return;
-    const territoryData = {
-      userId: user.uid,
-      userName: userProfile.displayName || "Unknown Runner",
-      path: [...currentPath, currentPath[0]],
-      color: `hsl(${Math.random() * 360}, 75%, 60%)`,
-      timestamp: Date.now(),
-      owners: [user.uid]
-    };
-    try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'territories'), territoryData);
-      
-      const newXp = (userProfile.xp || 0) + 100;
-      const newLevel = Math.floor(newXp / 500) + 1;
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid), {
-        xp: newXp,
-        level: newLevel
-      });
+            const handleFinishProfile = async (e) => {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const profile = {
+                    uid: user.uid,
+                    displayName: fd.get('name'),
+                    handle: fd.get('handle').toLowerCase().replace(/\s/g, ''),
+                    bio: fd.get('bio'),
+                    level: 1, xp: 0, followers: [], following: [], timestamp: Date.now()
+                };
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid), profile);
+                setOnboardingStep(2);
+            };
 
-      setIsTracking(false);
-      setCurrentPath([]);
-      setIsNearStart(false);
-    } catch (err) { console.error("Claim failed:", err); }
-  };
+            const handleStart = () => { setCurrentPath([userLocation]); setIsTracking(true); };
 
-  const requestPermissions = async () => {
-    if (isLocating) return;
-    setIsLocating(true);
-    setLocationError(null);
+            const handleClaim = async () => {
+                if (currentPath.length < 5 || !user) return;
+                const territoryData = {
+                    userId: user.uid, userName: userProfile.displayName, path: [...currentPath, currentPath[0]],
+                    color: `hsl(${Math.random() * 360}, 75%, 60%)`, timestamp: Date.now(), owners: [user.uid]
+                };
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'territories'), territoryData);
+                setIsTracking(false); setCurrentPath([]); setIsNearStart(false);
+            };
 
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setUserLocation([pos.coords.latitude, pos.coords.longitude]);
-          setLocationError(null);
-          setIsVirtualMode(false);
-          setIsLocating(false);
-          setOnboardingStep(3); // Onboarding Complete
-        },
-        (err) => {
-          let errorMsg = "Location access denied. Please enable GPS for real-world tracking.";
-          if (err.code === 1) errorMsg = "Permission denied. Check browser/site settings.";
-          if (err.code === 2) errorMsg = "Position unavailable. Please check your GPS signal.";
-          if (err.code === 3) errorMsg = "Request timed out. Please try again.";
-          setLocationError(errorMsg);
-          setIsLocating(false);
-        },
-        { timeout: 8000, enableHighAccuracy: true, maximumAge: 0 }
-      );
-    } else {
-      setLocationError("Geolocation is not supported by this browser.");
-      setIsLocating(false);
-    }
-  };
+            const simulateMovement = (dir) => {
+                const step = 0.00015;
+                let [lat, lng] = userLocation;
+                if (dir === 'N') lat += step; if (dir === 'S') lat -= step;
+                if (dir === 'E') lng += step; if (dir === 'W') lng -= step;
+                const newPos = [lat, lng];
+                setUserLocation(newPos);
+                if (isTracking) {
+                    setCurrentPath(prev => {
+                        const updated = [...prev, newPos];
+                        if (updated.length > 5) setIsNearStart(calculateDistance(newPos, updated[0]) < MIN_DISTANCE_TO_CLAIM);
+                        return updated;
+                    });
+                }
+            };
 
-  const startInVirtualMode = () => {
-    setIsVirtualMode(true);
-    setUserLocation(DEFAULT_COORDS);
-    setOnboardingStep(3);
-  };
+            const uploadMoment = async (e) => {
+                e.preventDefault();
+                const file = e.target.photo.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onloadend = async () => {
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'moments'), {
+                        userId: user.uid, userName: userProfile.displayName, userHandle: userProfile.handle,
+                        caption: e.target.caption.value, image: reader.result, timestamp: Date.now(), likes: []
+                    });
+                    setActiveTab('feed');
+                };
+                reader.readAsDataURL(file);
+            };
 
-  const handleFinishProfile = async (e) => {
-    e.preventDefault();
-    const data = new FormData(e.target);
-    const profile = {
-      uid: user.uid,
-      displayName: data.get('name'),
-      handle: data.get('handle').toLowerCase().replace(/\s/g, ''),
-      bio: data.get('bio'),
-      level: 1,
-      xp: 0,
-      followers: [],
-      following: [],
-      timestamp: Date.now()
-    };
-    try {
-      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid), profile);
-      setOnboardingStep(2); // Go to permissions
-    } catch (err) { console.error("Profile save error:", err); }
-  };
+            // --- Render Logic ---
+            if (onboardingStep === 0) return (
+                <div className="h-screen bg-neutral-950 text-white flex flex-col items-center justify-center p-8 space-y-12">
+                    <div className="text-center space-y-4">
+                        <div className="size-24 bg-indigo-600 rounded-[2rem] mx-auto flex items-center justify-center shadow-2xl shadow-indigo-600/30">
+                            <Zap size={56} fill="white" />
+                        </div>
+                        <h1 className="text-5xl font-black tracking-tighter italic uppercase leading-none">RunRealm</h1>
+                        <p className="text-neutral-500 max-w-xs mx-auto">Claim territories. Follow runners. Conquer the world.</p>
+                    </div>
+                    <div className="w-full max-w-xs space-y-4">
+                        <button onClick={handleSocialLogin} disabled={isLoggingIn} className="w-full bg-white text-black py-4 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50">
+                            {isLoggingIn ? <Loader2 className="animate-spin" /> : <Mail size={18} />} Login with Gmail
+                        </button>
+                        <button onClick={handleSocialLogin} disabled={isLoggingIn} className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-3 active:scale-95 shadow-xl disabled:opacity-50">
+                             {isLoggingIn ? <Loader2 className="animate-spin" /> : <Phone size={18} />} Login with Phone
+                        </button>
+                    </div>
+                </div>
+            );
 
-  const toggleFollow = async (targetUid) => {
-    if (!user || !userProfile || user.uid === targetUid) return;
-    const isFollowing = userProfile.following?.includes(targetUid);
-    const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid);
-    const targetRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', targetUid);
+            if (onboardingStep === 1) return (
+                <div className="h-screen bg-neutral-950 text-white p-8 flex flex-col justify-center">
+                    <div className="mb-8">
+                        <span className="text-indigo-500 font-black text-xs uppercase tracking-[0.3em]">Step 01 / 02</span>
+                        <h2 className="text-4xl font-black italic uppercase tracking-tighter mt-2 leading-none">Your Identity</h2>
+                    </div>
+                    <form onSubmit={handleFinishProfile} className="space-y-6">
+                        <div className="space-y-4">
+                            <input name="name" placeholder="Runner Name" required className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:border-indigo-500" />
+                            <input name="handle" placeholder="@realm_handle" required className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:border-indigo-500" />
+                            <textarea name="bio" placeholder="Your conquest bio..." className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 h-28 focus:outline-none focus:border-indigo-500" />
+                        </div>
+                        <button type="submit" className="w-full bg-indigo-600 py-5 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-2 active:scale-95">Next Step <ChevronRight size={20} /></button>
+                    </form>
+                </div>
+            );
 
-    try {
-      if (isFollowing) {
-        await updateDoc(userRef, { following: arrayRemove(targetUid) });
-        await updateDoc(targetRef, { followers: arrayRemove(user.uid) });
-      } else {
-        await updateDoc(userRef, { following: arrayUnion(targetUid) });
-        await updateDoc(targetRef, { followers: arrayUnion(user.uid) });
-      }
-    } catch (err) { console.error("Follow error:", err); }
-  };
+            if (onboardingStep === 2) return (
+                <div className="h-screen bg-neutral-950 text-white p-8 flex flex-col justify-center text-center">
+                    <span className="text-emerald-500 font-black text-xs uppercase tracking-[0.3em] mb-2">Step 02 / 02</span>
+                    <h2 className="text-3xl font-black italic uppercase tracking-tighter leading-none mb-10">Sensor Sync</h2>
+                    {locationError && <div className="bg-red-500/10 border border-red-500/20 p-5 rounded-3xl mb-8 flex items-start gap-4 text-left">
+                        <AlertTriangle className="text-red-500" /> <p className="text-xs text-red-400 font-bold uppercase tracking-wide">{locationError}</p>
+                    </div>}
+                    <div className="flex flex-col gap-4">
+                        <button onClick={requestPermissions} disabled={isLocating} className="w-full bg-indigo-600 py-5 rounded-[1.5rem] font-black uppercase tracking-widest shadow-2xl active:scale-95 flex items-center justify-center gap-3 disabled:opacity-50">
+                            {isLocating ? <Loader2 className="animate-spin" /> : <Shield size={20} />} Authorize GPS
+                        </button>
+                        <button onClick={startInVirtualMode} className="w-full bg-neutral-900 border border-white/10 py-5 rounded-[1.5rem] font-black uppercase text-[10px] tracking-[0.2em] active:scale-95 flex items-center justify-center gap-2">
+                            <Globe size={18} /> Enter in Virtual Mode
+                        </button>
+                    </div>
+                </div>
+            );
 
-  const uploadMoment = async (e) => {
-    e.preventDefault();
-    const data = new FormData(e.target);
-    const file = e.target.photo.files[0];
-    if (!file || !userProfile) return;
+            return (
+                <div className="flex flex-col h-screen bg-neutral-950 overflow-hidden select-none">
+                    <header className="p-4 bg-neutral-900/90 border-b border-white/5 flex justify-between items-center z-50">
+                        <div className="flex items-center gap-2">
+                            <div className="p-1.5 bg-indigo-600 rounded-lg"><Zap size={18} fill="white" /></div>
+                            <h1 className="font-black italic text-xl uppercase tracking-tighter">RunRealm</h1>
+                        </div>
+                        <div className="flex items-center gap-3 bg-white/5 pl-3 pr-1 py-1 rounded-full border border-white/10">
+                            <span className="text-[10px] font-black text-indigo-400">Lv.{userProfile?.level || 1}</span>
+                            <div className="size-8 bg-gradient-to-br from-indigo-500 to-purple-700 rounded-full flex items-center justify-center text-xs font-black">{userProfile?.displayName?.[0] || "?"}</div>
+                        </div>
+                    </header>
 
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-      try {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'moments'), {
-          userId: user.uid,
-          userName: userProfile.displayName,
-          userHandle: userProfile.handle,
-          caption: data.get('caption'),
-          image: reader.result, 
-          timestamp: Date.now(),
-          likes: []
-        });
-        e.target.reset();
-        setActiveTab('feed');
-      } catch (err) { console.error("Moment upload error:", err); }
-    };
-    reader.readAsDataURL(file);
-  };
+                    <main className="flex-1 relative overflow-y-auto">
+                        {activeTab === 'map' && <div className="h-full relative">
+                            <div ref={mapContainerRef} className="h-full w-full opacity-90" />
+                            <div className="absolute top-4 left-4 z-[1000] p-4 bg-black/70 rounded-3xl border border-white/10 flex gap-4 shadow-2xl backdrop-blur-md">
+                                <div className="text-center"><p className="text-[8px] text-neutral-500 font-black uppercase">Global</p><p className="font-mono font-black text-indigo-400">{territories.length}</p></div>
+                                <div className="w-px h-8 bg-white/10" />
+                                <div className="text-center"><p className="text-[8px] text-neutral-500 font-black uppercase">Path</p><p className="font-mono font-black text-emerald-400">{(currentPath.length * 0.05).toFixed(0)}m</p></div>
+                            </div>
+                            
+                            {isVirtualMode && <div className="absolute top-4 right-4 z-[1000] bg-black/70 p-2 rounded-2xl border border-white/10 grid grid-cols-3 gap-1 shadow-2xl">
+                                <div/><button onClick={()=>simulateMovement('N')} className="bg-white/10 p-2 rounded-lg text-xs font-bold hover:bg-indigo-600">N</button><div/>
+                                <button onClick={()=>simulateMovement('W')} className="bg-white/10 p-2 rounded-lg text-xs font-bold hover:bg-indigo-600">W</button>
+                                <button onClick={()=>simulateMovement('S')} className="bg-white/10 p-2 rounded-lg text-xs font-bold hover:bg-indigo-600">S</button>
+                                <button onClick={()=>simulateMovement('E')} className="bg-white/10 p-2 rounded-lg text-xs font-bold hover:bg-indigo-600">E</button>
+                            </div>}
 
-  const simulateMovement = (direction) => {
-    const step = 0.00015;
-    let newLat = userLocation[0];
-    let newLng = userLocation[1];
-    if (direction === 'N') newLat += step;
-    if (direction === 'S') newLat -= step;
-    if (direction === 'E') newLng += step;
-    if (direction === 'W') newLng -= step;
-    const newPos = [newLat, newLng];
-    if (isTracking) {
-      setUserLocation(newPos);
-      setCurrentPath(prev => {
-        if (prev.length === 0) return [newPos];
-        const updated = [...prev, newPos];
-        if (updated.length > 5) {
-          setIsNearStart(calculateDistance(newPos, updated[0]) < MIN_DISTANCE_TO_CLAIM);
+                            <div className="absolute bottom-10 left-0 right-0 z-[1000] flex flex-col items-center gap-6">
+                                {isNearStart && isTracking && <div className="bg-emerald-500 px-6 py-2 rounded-full text-[10px] font-black animate-bounce shadow-xl uppercase tracking-widest border border-white/20">Loop Closed • Claim Domain</div>}
+                                {!isTracking ? <button onClick={handleStart} className="bg-indigo-600 p-9 rounded-[2rem] shadow-2xl active:scale-95"><Play fill="white" size={36} /></button> :
+                                <div className="flex gap-4"><button onClick={()=>{setIsTracking(false);setCurrentPath([]);}} className="bg-neutral-800 p-6 rounded-3xl"><Square fill="white" size={24}/></button>
+                                <button onClick={handleClaim} disabled={currentPath.length < 5} className={`px-12 py-6 rounded-[2rem] font-black text-sm tracking-widest border-b-4 transition-all uppercase ${currentPath.length >= 5 ? 'bg-emerald-500 border-emerald-700' : 'bg-neutral-800 grayscale cursor-not-allowed opacity-50'}`}>Claim Conquest</button></div>}
+                            </div>
+                        </div>}
+
+                        {activeTab === 'feed' && <div className="p-5 space-y-6 pb-24">
+                            <div className="flex justify-between items-center"><h2 className="text-3xl font-black italic uppercase tracking-tighter">Feed</h2><button onClick={()=>setActiveTab('upload')} className="bg-indigo-600 p-3 rounded-2xl shadow-lg shadow-indigo-600/20"><PlusSquare size={24}/></button></div>
+                            {moments.map(m => <div key={m.id} className="bg-neutral-900 rounded-[2.5rem] overflow-hidden border border-white/5 shadow-2xl">
+                                <div className="p-5 flex items-center justify-between">
+                                    <div className="flex items-center gap-3"><div className="size-10 bg-indigo-600 rounded-2xl flex items-center justify-center font-black">{m.userName?.[0]}</div><div><p className="text-sm font-black uppercase">{m.userName}</p><p className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">@{m.userHandle}</p></div></div>
+                                </div>
+                                <img src={m.image} className="w-full aspect-square object-cover" />
+                                <div className="p-6 space-y-4">
+                                    <div className="flex gap-6"><Heart size={26}/><MessageSquare size={26}/><Send size={26} className="ml-auto"/></div>
+                                    <p className="text-sm"><span className="font-black mr-2 uppercase italic text-[12px]">@{m.userHandle}</span><span className="text-neutral-400">{m.caption}</span></p>
+                                </div>
+                            </div>)}
+                        </div>}
+
+                        {activeTab === 'upload' && <div className="p-8"><form onSubmit={uploadMoment} className="space-y-8">
+                            <div className="aspect-square bg-white/5 border-2 border-dashed border-white/10 rounded-[2.5rem] flex flex-col items-center justify-center relative overflow-hidden group cursor-pointer hover:border-indigo-500/50">
+                                <input type="file" name="photo" accept="image/*" required className="absolute inset-0 opacity-0 cursor-pointer z-10" />
+                                <Camera size={48} className="text-neutral-600 group-hover:text-indigo-500" />
+                                <p className="text-[10px] text-neutral-500 font-black mt-4 uppercase tracking-[0.3em]">Select Conquest Moment</p>
+                            </div>
+                            <textarea name="caption" placeholder="Describe the mission..." required className="w-full bg-white/5 border border-white/10 rounded-[1.5rem] px-6 py-5 h-32 focus:outline-none focus:border-indigo-500 transition-all font-medium" />
+                            <button type="submit" className="w-full bg-indigo-600 py-5 rounded-2xl font-black uppercase tracking-widest shadow-xl active:scale-95 flex items-center justify-center gap-3 text-sm"><Zap size={20} fill="white" /> Broadcast Moment</button>
+                        </form></div>}
+
+                        {activeTab === 'leaderboard' && <div className="p-6 space-y-6 pb-24">
+                            <div className="flex justify-between items-center"><h2 className="text-3xl font-black italic uppercase tracking-tighter">Overlords</h2><Trophy className="text-amber-500" size={32}/></div>
+                            <div className="space-y-3">{territories.reduce((acc, curr) => {
+                                const name = curr.userName || "Unknown";
+                                const existing = acc.find(a => a.name === name);
+                                if (existing) existing.count++; else acc.push({ name, count: 1 });
+                                return acc;
+                            }, []).sort((a,b)=>b.count-a.count).map((p, i) => <div key={i} className="bg-neutral-900 p-5 rounded-[2rem] border border-white/5 flex justify-between items-center group">
+                                <div className="flex items-center gap-5"><span className={`font-black text-2xl w-8 text-center ${i===0?'text-amber-400':i===1?'text-neutral-400':i===2?'text-orange-700':'text-neutral-800'}`}>{i+1}</span><div><p className="font-black uppercase group-hover:text-indigo-400">{p.name}</p><p className="text-[10px] text-neutral-500 uppercase tracking-widest font-bold mt-1">{p.count} Domains Captured</p></div></div>
+                                <div className="size-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-[10px] font-black text-neutral-500">{p.count}</div>
+                            </div>)}</div>
+                        </div>}
+
+                        {activeTab === 'profile' && <div className="p-10 flex flex-col items-center space-y-8 pb-32">
+                            <div className="size-32 bg-gradient-to-br from-indigo-500 via-purple-600 to-indigo-700 rounded-[3rem] flex items-center justify-center text-5xl font-black shadow-2xl border-4 border-white/10">{userProfile?.displayName?.[0]}</div>
+                            <div className="text-center space-y-2"><h2 className="text-3xl font-black uppercase italic tracking-tighter">{userProfile?.displayName}</h2><p className="text-indigo-500 font-black uppercase text-xs tracking-[0.4em] italic">@{userProfile?.handle}</p></div>
+                            <div className="flex gap-10 pt-4 text-center">
+                                <div><p className="text-xl font-black italic">{userProfile?.followers?.length || 0}</p><p className="text-[8px] text-neutral-500 uppercase font-black tracking-[0.2em] mt-2">Followers</p></div>
+                                <div><p className="text-xl font-black italic">{userProfile?.level || 1}</p><p className="text-[8px] text-neutral-500 uppercase font-black tracking-[0.2em] mt-2">Level</p></div>
+                                <div><p className="text-xl font-black italic">{territories.filter(t=>t.userId===user?.uid).length}</p><p className="text-[8px] text-neutral-500 uppercase font-black tracking-[0.2em] mt-2">Domains</p></div>
+                            </div>
+                            <div className="w-full bg-white/5 p-8 rounded-[2.5rem] border border-white/10 shadow-inner italic text-neutral-400 text-sm">"{userProfile?.bio || "No mission statement established."}"</div>
+                            <button onClick={()=>auth.signOut()} className="w-full py-5 border border-red-500/20 text-red-500 rounded-3xl text-[10px] font-black uppercase tracking-[0.4em] active:scale-95 transition-all">Terminate Connection</button>
+                        </div>}
+                    </main>
+
+                    <footer className="bg-neutral-900 border-t border-white/5 px-8 pt-4 pb-12 flex justify-between items-center z-50">
+                        <NavBtn icon={<MapIcon />} active={activeTab === 'map'} onClick={() => setActiveTab('map')} />
+                        <NavBtn icon={<Users />} active={activeTab === 'feed'} onClick={() => setActiveTab('feed')} />
+                        <NavBtn icon={<Trophy />} active={activeTab === 'leaderboard'} onClick={() => setActiveTab('leaderboard')} />
+                        <NavBtn icon={<User />} active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} />
+                    </footer>
+                </div>
+            );
         }
-        return updated;
-      });
-    } else {
-      setUserLocation(newPos);
-    }
-  };
 
-  // --- Render Logic ---
-
-  // STEP 0: LOGIN
-  if (onboardingStep === 0) {
-    return (
-      <div className="h-screen bg-neutral-950 text-white flex flex-col items-center justify-center p-8 space-y-12 animate-in fade-in duration-700">
-        <div className="text-center space-y-4">
-          <div className="size-24 bg-indigo-600 rounded-[2rem] mx-auto flex items-center justify-center shadow-2xl shadow-indigo-600/30 animate-bounce">
-            <Zap size={56} className="fill-white" />
-          </div>
-          <h1 className="text-5xl font-black tracking-tighter italic uppercase leading-none">RunRealm</h1>
-          <p className="text-neutral-500 font-medium max-w-xs mx-auto">The ultimate fitness conquest. Join thousands of runners claiming the world.</p>
-        </div>
-
-        <div className="w-full max-w-xs space-y-4">
-          <button 
-            onClick={() => handleSocialLogin('google')}
-            disabled={isLoggingIn}
-            className="w-full bg-white text-black py-4 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-3 active:scale-95 transition-all disabled:opacity-50"
-          >
-            {isLoggingIn ? <Loader2 className="animate-spin" /> : <Mail size={18} />}
-            Login with Gmail
-          </button>
-          <button 
-            onClick={() => handleSocialLogin('phone')}
-            disabled={isLoggingIn}
-            className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-3 active:scale-95 transition-all shadow-xl shadow-indigo-600/20 disabled:opacity-50"
-          >
-             {isLoggingIn ? <Loader2 className="animate-spin" /> : <Phone size={18} />}
-            Login with Phone
-          </button>
-          <div className="flex items-center gap-4 py-2">
-            <div className="h-px bg-white/10 flex-1" />
-            <span className="text-[10px] font-black text-neutral-600 uppercase tracking-widest leading-none">Secured Realm</span>
-            <div className="h-px bg-white/10 flex-1" />
-          </div>
-          <div className="flex justify-center gap-2 text-neutral-500">
-            <Shield size={14} />
-            <span className="text-[10px] font-bold uppercase tracking-widest">End-to-End Encrypted</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // STEP 1: CREATE PROFILE
-  if (onboardingStep === 1) {
-    return (
-      <div className="h-screen bg-neutral-950 text-white p-8 flex flex-col justify-center animate-in slide-in-from-right-8 duration-500">
-        <div className="mb-8">
-           <span className="text-indigo-500 font-black text-xs uppercase tracking-[0.3em]">Step 01 / 02</span>
-           <h2 className="text-4xl font-black italic uppercase tracking-tighter mt-2 leading-none">Create Your Identity</h2>
-        </div>
-        <form onSubmit={handleFinishProfile} className="space-y-6">
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-neutral-500 ml-2">Runner Name</label>
-              <input name="name" placeholder="e.g. Alex Storm" required className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:border-indigo-500 transition-colors" />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-neutral-500 ml-2">Realm Handle</label>
-              <input name="handle" placeholder="e.g. storm_runner" required className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:border-indigo-500 transition-colors" />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-black uppercase tracking-widest text-neutral-500 ml-2">Runner Bio</label>
-              <textarea name="bio" placeholder="What drives your conquest?" className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 h-28 focus:outline-none focus:border-indigo-500 transition-colors resize-none" />
-            </div>
-          </div>
-          <button type="submit" className="w-full bg-indigo-600 py-5 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-2 active:scale-95 transition-transform shadow-xl shadow-indigo-600/20">
-            Initialize Profile <ChevronRight size={20} />
-          </button>
-        </form>
-      </div>
-    );
-  }
-
-  // STEP 2: PERMISSIONS
-  if (onboardingStep === 2) {
-    return (
-      <div className="h-screen bg-neutral-950 text-white p-8 flex flex-col justify-center animate-in slide-in-from-right-8 duration-500">
-        <div className="mb-10 text-center">
-           <span className="text-emerald-500 font-black text-xs uppercase tracking-[0.3em]">Step 02 / 02</span>
-           <h2 className="text-3xl font-black italic uppercase tracking-tighter mt-2 leading-none">Initialize Sensors</h2>
-           <p className="text-neutral-500 mt-4 text-sm font-medium">RunRealm requires active tracking to map your conquest and media access to share moments.</p>
-        </div>
-
-        {locationError && (
-          <div className="bg-red-500/10 border border-red-500/20 p-5 rounded-3xl mb-8 flex items-start gap-4">
-            <AlertTriangle className="text-red-500 shrink-0" size={24} />
-            <p className="text-xs text-red-400 font-bold leading-relaxed uppercase tracking-wide">{locationError}</p>
-          </div>
-        )}
-
-        <div className="space-y-4 mb-10">
-          <div className="p-6 bg-white/5 rounded-3xl border border-white/10 flex items-center justify-between group transition-all hover:bg-white/[0.07]">
-            <div className="flex items-center gap-4">
-              <div className="p-3 bg-indigo-500/20 rounded-2xl text-indigo-400"><Navigation2 size={24} /></div>
-              <div>
-                <p className="font-black uppercase text-sm tracking-tight leading-none">GPS Location</p>
-                <p className="text-[10px] text-neutral-500 font-bold mt-1 uppercase tracking-widest">Real-time Mapping</p>
-              </div>
-            </div>
-            <CheckCircle2 size={28} className={userLocation !== DEFAULT_COORDS ? "text-emerald-500" : "text-neutral-800"} />
-          </div>
-          <div className="p-6 bg-white/5 rounded-3xl border border-white/10 flex items-center justify-between group transition-all hover:bg-white/[0.07]">
-            <div className="flex items-center gap-4">
-              <div className="p-3 bg-indigo-500/20 rounded-2xl text-indigo-400"><ImageIcon size={24} /></div>
-              <div>
-                <p className="font-black uppercase text-sm tracking-tight leading-none">Media Vault</p>
-                <p className="text-[10px] text-neutral-500 font-bold mt-1 uppercase tracking-widest">Moments Sharing</p>
-              </div>
-            </div>
-            <CheckCircle2 size={28} className="text-emerald-500" />
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-4">
-          <button 
-            onClick={requestPermissions}
-            disabled={isLocating}
-            className="w-full bg-indigo-600 py-5 rounded-[1.5rem] font-black uppercase tracking-widest shadow-2xl shadow-indigo-600/30 active:scale-95 flex items-center justify-center gap-3 disabled:opacity-50"
-          >
-            {isLocating ? <Loader2 className="animate-spin" /> : <Shield size={20} />}
-            Synchronize & Enter
-          </button>
-          <button 
-            onClick={startInVirtualMode}
-            className="w-full bg-neutral-900 border border-white/10 py-5 rounded-[1.5rem] font-black uppercase text-[10px] tracking-[0.2em] active:scale-95 flex items-center justify-center gap-2"
-          >
-            <Globe size={18} /> Enter in Virtual Mode
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // STEP 3: MAIN APP
-  return (
-    <div className="flex flex-col h-screen bg-neutral-950 text-white font-sans overflow-hidden select-none">
-      {/* Dynamic Realm Header */}
-      <header className="p-4 bg-neutral-900/90 backdrop-blur-md border-b border-white/5 flex justify-between items-center z-50 shadow-2xl">
-        <div className="flex items-center gap-3">
-          <div className="p-1.5 bg-indigo-600 rounded-lg shadow-lg">
-            <Zap size={18} className="fill-white" />
-          </div>
-          <h1 className="font-black italic tracking-tighter text-xl leading-none uppercase">RunRealm</h1>
-        </div>
-        <div className="flex items-center gap-4">
-          <Bell size={20} className="text-neutral-500 hover:text-white transition-colors" />
-          <div className="flex items-center gap-2.5 bg-white/5 pl-3 pr-1.5 py-1.5 rounded-full border border-white/10 shadow-inner">
-             <span className="text-[10px] font-black text-indigo-400 tracking-tighter uppercase leading-none">Lv.{userProfile?.level || 1}</span>
-             <div className="size-7 bg-gradient-to-br from-indigo-500 to-purple-700 rounded-full flex items-center justify-center text-xs font-black border border-white/10 shadow-md">
-               {userProfile?.displayName?.[0] || "?"}
-             </div>
-          </div>
-        </div>
-      </header>
-
-      <main className="flex-1 relative overflow-hidden overflow-y-auto bg-neutral-950">
-        {activeTab === 'map' && (
-          <div className="h-full relative">
-            <div ref={mapContainerRef} className="h-full w-full opacity-90 transition-opacity duration-1000" />
-            
-            {/* Map HUD */}
-            <div className="absolute top-6 left-6 z-[1000] space-y-3 pointer-events-none">
-               <div className="bg-black/70 backdrop-blur-2xl p-4 rounded-[2rem] border border-white/10 flex items-center gap-6 pointer-events-auto shadow-2xl">
-                 <div className="text-center">
-                   <p className="text-[8px] text-neutral-500 font-black uppercase tracking-[0.2em] mb-1.5">Conquests</p>
-                   <p className="font-mono font-black text-indigo-400 text-xl leading-none tracking-tighter">{territories.length}</p>
-                 </div>
-                 <div className="w-px h-10 bg-white/10"></div>
-                 <div className="text-center">
-                   <p className="text-[8px] text-neutral-500 font-black uppercase tracking-[0.2em] mb-1.5">Active Run</p>
-                   <p className="font-mono font-black text-emerald-400 text-xl leading-none tracking-tighter">{(currentPath.length * 0.05).toFixed(0)}m</p>
-                 </div>
-                 {isVirtualMode && (
-                   <div className="bg-indigo-600/20 px-3 py-1 rounded-lg border border-indigo-500/30">
-                     <p className="text-[8px] font-black text-indigo-400 uppercase tracking-widest leading-none">Virtual</p>
-                   </div>
-                 )}
-               </div>
-            </div>
-
-            {/* Simulated Joypad for Virtual Mode */}
-            {isVirtualMode && (
-              <div className="absolute top-6 right-6 z-[1000] flex flex-col gap-1 pointer-events-auto">
-                <div className="grid grid-cols-3 gap-1 bg-black/60 p-2 rounded-2xl border border-white/10 backdrop-blur-md shadow-2xl">
-                   <div />
-                   <button onClick={() => simulateMovement('N')} className="bg-white/10 p-2.5 rounded-xl hover:bg-indigo-600 transition-all font-black text-xs active:scale-90">N</button>
-                   <div />
-                   <button onClick={() => simulateMovement('W')} className="bg-white/10 p-2.5 rounded-xl hover:bg-indigo-600 transition-all font-black text-xs active:scale-90">W</button>
-                   <button onClick={() => simulateMovement('S')} className="bg-white/10 p-2.5 rounded-xl hover:bg-indigo-600 transition-all font-black text-xs active:scale-90">S</button>
-                   <button onClick={() => simulateMovement('E')} className="bg-white/10 p-2.5 rounded-xl hover:bg-indigo-600 transition-all font-black text-xs active:scale-90">E</button>
-                </div>
-              </div>
-            )}
-
-            {/* Tactical Action Bar */}
-            <div className="absolute bottom-10 left-0 right-0 z-[1000] flex flex-col items-center gap-6 px-6 pointer-events-none">
-              {isNearStart && isTracking && (
-                 <div className="bg-emerald-500 px-8 py-3 rounded-full text-[10px] font-black animate-bounce shadow-[0_0_30px_rgba(16,185,129,0.5)] uppercase tracking-[0.2em] border-2 border-white/20 pointer-events-auto">
-                    Loop Closed • Claim Territory
-                 </div>
-              )}
-              
-              <div className="flex gap-5 pointer-events-auto">
-                {!isTracking ? (
-                  <button 
-                    onClick={handleStart} 
-                    className="bg-indigo-600 text-white p-9 rounded-[2rem] shadow-[0_20px_50px_rgba(79,70,229,0.5)] active:scale-90 transition-all group flex flex-col items-center gap-2"
-                  >
-                    <Play className="fill-white group-hover:scale-110 transition-transform" size={36} />
-                    <span className="text-[10px] font-black uppercase tracking-[0.2em]">Begin Run</span>
-                  </button>
-                ) : (
-                  <div className="flex gap-4">
-                     <button 
-                      onClick={() => { setIsTracking(false); setCurrentPath([]); }} 
-                      className="bg-neutral-800 p-6 rounded-[1.5rem] shadow-xl hover:bg-red-500/20 transition-all active:scale-95"
-                     >
-                      <Square className="fill-white" size={28} />
-                     </button>
-                     <button 
-                      onClick={handleClaim} 
-                      className={`px-12 py-6 rounded-[2rem] font-black text-sm tracking-[0.2em] border-b-4 shadow-2xl transition-all active:translate-y-1 uppercase ${currentPath.length >= 5 ? 'bg-emerald-500 border-emerald-700 text-white' : 'bg-neutral-800 border-white/5 text-neutral-600 grayscale cursor-not-allowed'}`}
-                     >
-                      Finalize Conquest
-                     </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'feed' && (
-          <div className="p-5 space-y-8 pb-32">
-            <div className="flex items-center justify-between">
-              <h2 className="text-3xl font-black italic tracking-tighter uppercase leading-none">Realm Moments</h2>
-              <button 
-                onClick={() => setActiveTab('upload')} 
-                className="bg-indigo-600 p-3 rounded-2xl shadow-lg shadow-indigo-600/20 active:scale-90 transition-transform"
-              >
-                <PlusSquare size={24}/>
-              </button>
-            </div>
-            
-            {moments.map((moment) => (
-              <div key={moment.id} className="bg-neutral-900 rounded-[2.5rem] overflow-hidden border border-white/5 shadow-2xl animate-in fade-in slide-in-from-bottom-6 duration-700">
-                <div className="p-5 flex items-center justify-between border-b border-white/5">
-                  <div className="flex items-center gap-4">
-                    <div className="size-11 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center font-black shadow-lg">
-                      {moment.userName?.[0] || "?"}
-                    </div>
-                    <div>
-                      <p className="text-sm font-black leading-none tracking-tight uppercase">{moment.userName}</p>
-                      <p className="text-[10px] text-indigo-400 font-black mt-1.5 uppercase tracking-widest italic leading-none">@{moment.userHandle}</p>
-                    </div>
-                  </div>
-                  {moment.userId !== user?.uid && (
-                    <button 
-                      onClick={() => toggleFollow(moment.userId)}
-                      className={`px-5 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all active:scale-95 shadow-sm ${userProfile?.following?.includes(moment.userId) ? 'border-white/10 text-neutral-500 bg-white/5' : 'border-indigo-500 text-indigo-400 bg-indigo-500/10'}`}
-                    >
-                      {userProfile?.following?.includes(moment.userId) ? 'Following' : 'Follow'}
-                    </button>
-                  )}
-                </div>
-                {moment.image && (
-                  <div className="relative group overflow-hidden">
-                    <img src={moment.image} alt="Moment" className="w-full aspect-square object-cover transition-transform duration-700 group-hover:scale-105" />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </div>
-                )}
-                <div className="p-6">
-                  <div className="flex gap-6 mb-4">
-                    <Heart size={26} className="text-neutral-500 hover:text-red-500 cursor-pointer transition-colors active:scale-125" />
-                    <MessageSquare size={26} className="text-neutral-500 hover:text-indigo-400 cursor-pointer transition-colors" />
-                    <Send size={26} className="text-neutral-500 ml-auto" />
-                  </div>
-                  <p className="text-sm leading-relaxed font-medium">
-                    <span className="font-black mr-2 tracking-tight text-white uppercase italic">@{moment.userHandle}</span>
-                    <span className="text-neutral-400">{moment.caption}</span>
-                  </p>
-                </div>
-              </div>
-            ))}
-            {moments.length === 0 && <div className="text-center text-neutral-600 py-32 uppercase text-[10px] font-black tracking-[0.5em] opacity-30 italic">No realm moments captured yet.</div>}
-          </div>
-        )}
-
-        {activeTab === 'upload' && (
-          <div className="p-8 max-w-xl mx-auto">
-             <div className="flex items-center gap-4 mb-10">
-                <button onClick={() => setActiveTab('feed')} className="text-neutral-500 hover:text-white p-2 bg-white/5 rounded-xl">
-                  <ChevronRight size={24} className="rotate-180" />
+        function NavBtn({ icon, active, onClick }) {
+            return (
+                <button onClick={onClick} className={`p-4 rounded-[1.5rem] transition-all active:scale-125 ${active ? 'bg-indigo-600/20 text-indigo-500 shadow-lg scale-110' : 'text-neutral-600 hover:text-neutral-400'}`}>
+                    {React.cloneElement(icon, { size: 24, strokeWidth: active ? 3 : 2 })}
                 </button>
-                <h2 className="text-3xl font-black italic uppercase tracking-tighter leading-none">Share Conquest</h2>
-             </div>
-             <form onSubmit={uploadMoment} className="space-y-8">
-                <div className="aspect-square bg-white/5 border-2 border-dashed border-white/10 rounded-[2.5rem] flex flex-col items-center justify-center relative overflow-hidden group cursor-pointer hover:border-indigo-500/50 transition-colors shadow-inner">
-                   <input type="file" name="photo" accept="image/*" required className="absolute inset-0 opacity-0 cursor-pointer z-10" />
-                   <div className="size-20 bg-indigo-600/10 rounded-3xl flex items-center justify-center text-indigo-500 group-hover:bg-indigo-600 group-hover:text-white transition-all">
-                    <Camera size={40} />
-                   </div>
-                   <p className="text-[10px] text-neutral-500 font-black mt-6 uppercase tracking-[0.3em]">Deploy Moment Data</p>
-                </div>
-                <div className="space-y-3">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-neutral-600 ml-4">Codename / Caption</label>
-                  <textarea name="caption" placeholder="Describe the journey..." required className="w-full bg-white/5 border border-white/10 rounded-[1.5rem] px-6 py-5 h-32 focus:outline-none focus:border-indigo-500 transition-all font-medium" />
-                </div>
-                <div className="flex gap-4 pt-4">
-                   <button type="submit" className="w-full bg-indigo-600 py-5 rounded-2xl font-black uppercase tracking-widest shadow-[0_20px_40px_rgba(79,70,229,0.3)] active:scale-95 transition-transform flex items-center justify-center gap-3 text-sm">
-                    <Zap size={20} className="fill-white" /> Broadcast Moment
-                   </button>
-                </div>
-             </form>
-          </div>
-        )}
+            );
+        }
 
-        {activeTab === 'leaderboard' && (
-          <div className="p-6 space-y-8 pb-32">
-             <div className="flex items-center justify-between">
-                <h2 className="text-3xl font-black italic tracking-tighter uppercase leading-none">Overlords</h2>
-                <Trophy className="text-amber-500 drop-shadow-[0_0_10px_rgba(245,158,11,0.5)]" size={32} />
-             </div>
-             <div className="space-y-4">
-               {territories.length > 0 ? territories.reduce((acc, curr) => {
-                 const name = curr.userName || "Unknown";
-                 const existing = acc.find(a => a.name === name);
-                 if (existing) existing.count++;
-                 else acc.push({ name: name, count: 1 });
-                 return acc;
-               }, []).sort((a,b) => b.count - a.count).map((player, idx) => (
-                 <div key={idx} className="bg-neutral-900/60 p-6 rounded-[2rem] flex items-center justify-between border border-white/5 shadow-2xl backdrop-blur-md group hover:bg-neutral-800 transition-colors">
-                   <div className="flex items-center gap-5">
-                     <span className={`font-black text-3xl w-10 text-center ${idx === 0 ? 'text-amber-500 drop-shadow-[0_0_8px_rgba(245,158,11,0.3)]' : idx === 1 ? 'text-neutral-400' : idx === 2 ? 'text-orange-700' : 'text-neutral-800'}`}>
-                       {idx + 1}
-                     </span>
-                     <div>
-                       <p className="font-black text-lg uppercase leading-none tracking-tight group-hover:text-indigo-400 transition-colors">{player.name}</p>
-                       <p className="text-[10px] text-neutral-500 font-bold mt-2 uppercase tracking-widest opacity-60 leading-none">{player.count} Domains Ruled</p>
-                     </div>
-                   </div>
-                   <div className="size-12 rounded-2xl bg-white/5 flex items-center justify-center text-[10px] font-black text-neutral-400 border border-white/10 group-hover:border-indigo-500/30">
-                     {player.count}
-                   </div>
-                 </div>
-               )) : (
-                 <div className="text-center py-32 opacity-20 flex flex-col items-center">
-                   <Trophy size={64} className="mb-6" />
-                   <p className="text-xs font-black uppercase tracking-[0.5em] leading-none italic">No Claims Detected</p>
-                 </div>
-               )}
-             </div>
-          </div>
-        )}
-
-        {activeTab === 'profile' && (
-           <div className="p-8 space-y-10 pb-32">
-              <div className="flex flex-col items-center gap-6 text-center">
-                 <div className="size-32 bg-gradient-to-br from-indigo-500 via-purple-600 to-indigo-700 rounded-[3rem] flex items-center justify-center text-5xl font-black shadow-[0_20px_50px_rgba(79,70,229,0.3)] border-4 border-white/10 animate-in zoom-in duration-700">
-                   {userProfile?.displayName?.[0] || "?"}
-                 </div>
-                 <div className="space-y-2">
-                    <h2 className="text-4xl font-black italic uppercase leading-none tracking-tighter">{userProfile?.displayName}</h2>
-                    <p className="text-indigo-500 font-black uppercase text-xs tracking-[0.4em] italic leading-none">@{userProfile?.handle}</p>
-                 </div>
-                 <div className="flex gap-10 pt-4">
-                    <div className="text-center"><p className="text-xl font-black leading-none italic">{userProfile?.followers?.length || 0}</p><p className="text-[8px] text-neutral-500 uppercase font-black tracking-[0.2em] mt-3 leading-none">Followers</p></div>
-                    <div className="text-center"><p className="text-xl font-black leading-none italic">{userProfile?.following?.length || 0}</p><p className="text-[8px] text-neutral-500 uppercase font-black tracking-[0.2em] mt-3 leading-none">Following</p></div>
-                    <div className="text-center"><p className="text-xl font-black leading-none italic">{userProfile?.level || 1}</p><p className="text-[8px] text-neutral-500 uppercase font-black tracking-[0.2em] mt-3 leading-none">Realm Level</p></div>
-                 </div>
-              </div>
-
-              <div className="bg-white/5 rounded-[2rem] p-8 border border-white/10 shadow-inner relative overflow-hidden group">
-                 <p className="text-sm leading-relaxed italic text-neutral-400 relative z-10 font-medium tracking-tight">"{userProfile?.bio || "No bio established in the realm."}"</p>
-                 <Zap size={60} className="absolute -right-4 -bottom-4 text-white/[0.03] rotate-12 group-hover:scale-110 transition-transform" />
-              </div>
-
-              <div className="grid grid-cols-2 gap-5">
-                 <div className="bg-indigo-600/10 p-7 rounded-[2.5rem] border border-indigo-500/20 shadow-xl group hover:bg-indigo-600/20 transition-all">
-                    <Zap className="text-indigo-500 mb-3" size={24} />
-                    <p className="text-3xl font-black leading-none tracking-tighter italic">{userProfile?.xp || 0}</p>
-                    <p className="text-[9px] text-indigo-500/60 uppercase font-black mt-3 tracking-widest leading-none">Tactical XP</p>
-                 </div>
-                 <div className="bg-emerald-600/10 p-7 rounded-[2.5rem] border border-emerald-500/20 shadow-xl group hover:bg-emerald-600/20 transition-all">
-                    <Trophy className="text-emerald-500 mb-3" size={24} />
-                    <p className="text-3xl font-black leading-none tracking-tighter italic">{territories.filter(t => t.userId === user?.uid).length}</p>
-                    <p className="text-[9px] text-emerald-500/60 uppercase font-black mt-3 tracking-widest leading-none">Domains Captured</p>
-                 </div>
-              </div>
-              
-              <button 
-                onClick={() => auth.signOut().then(() => setOnboardingStep(0))} 
-                className="w-full py-5 border border-red-500/20 text-red-500 rounded-3xl text-[10px] font-black uppercase tracking-[0.4em] hover:bg-red-500/5 transition-all active:scale-95 shadow-lg"
-              >
-                Terminate Connection
-              </button>
-           </div>
-        )}
-      </main>
-
-      {/* Global Realm Navigation */}
-      <footer className="bg-neutral-900 border-t border-white/5 px-8 pt-4 pb-12 flex justify-between items-center z-50 shadow-[0_-20px_50px_rgba(0,0,0,0.5)]">
-        <NavBtn icon={<MapIcon />} active={activeTab === 'map'} onClick={() => setActiveTab('map')} />
-        <NavBtn icon={<Users />} active={activeTab === 'feed'} onClick={() => setActiveTab('feed')} />
-        <NavBtn icon={<Trophy />} active={activeTab === 'leaderboard'} onClick={() => setActiveTab('leaderboard')} />
-        <NavBtn icon={<User />} active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} />
-      </footer>
-    </div>
-  );
-}
-
-function NavBtn({ icon, active, onClick }) {
-  return (
-    <button 
-      onClick={onClick} 
-      className={`p-3.5 rounded-[1.25rem] transition-all duration-300 active:scale-125 ${active ? 'bg-indigo-600/20 text-indigo-500 shadow-[0_0_20px_rgba(79,70,229,0.2)] scale-110' : 'text-neutral-600 hover:text-neutral-400'}`}
-    >
-      {React.cloneElement(icon, { size: 26, strokeWidth: active ? 3 : 2 })}
-    </button>
-  );
-}
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
