@@ -3,162 +3,127 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RunRealm Pro | Fitness Conquest</title>
+    <title>RunRealm Pro | Deployment Ready</title>
     
     <!-- CDNs -->
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Leaflet Mapping -->
+    <!-- Leaflet -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="https://unpkg.com/lucide-react@latest"></script>
+
+    <!-- Firebase Compat (Ensures no "module" vs "babel" script conflicts) -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
-        body { font-family: 'Inter', sans-serif; background-color: #0a0a0a; color: white; }
-        .leaflet-container { background: #0f172a !important; }
-        ::-webkit-scrollbar { width: 0px; background: transparent; }
+        body { font-family: 'Inter', sans-serif; background-color: #0a0a0a; margin: 0; overflow: hidden; }
+        .leaflet-container { background: #0a0a0a !important; }
+        .shadow-premium { box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef, useMemo } = React;
-        const { 
-            Map: MapIcon, MessageSquare, Trophy, Settings, 
-            Play, Square, ShieldCheck, Zap, User, Send, Navigation2, 
-            Handshake, Camera, Heart, PlusSquare, Image: ImageIcon,
-            CheckCircle2, ChevronRight, Users, Bell, Globe, AlertTriangle, RefreshCw, Loader2,
-            Mail, Phone, Shield
-        } = lucide;
+        const { useState, useEffect, useRef } = React;
 
-        // --- Firebase Shim (Since we're in a single file) ---
-        // Note: In a real deployment, replace these imports with actual Firebase SDK modules if preferred.
-        // For this single-file HTML version, we assume the environment provides the global Firebase objects.
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, updateDoc, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
-
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        // --- Firebase Configuration ---
+        // Replace with your actual Firebase config or use environment variables
+        const firebaseConfig = { apiKey: "", authDomain: "", projectId: "", storageBucket: "", messagingSenderId: "", appId: "" };
+        
+        // Use global variables if provided by environment, otherwise fallback
+        const finalConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : firebaseConfig;
+        const app = firebase.initializeApp(finalConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'run-realm-v1';
 
         const MAP_TILE_URL = "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png";
-        const MIN_DISTANCE_TO_CLAIM = 0.00015; 
         const DEFAULT_COORDS = [51.505, -0.09];
 
-        const calculateDistance = (p1, p2) => {
-            if (!p1 || !p2) return 999;
-            return Math.sqrt(Math.pow(p1[0] - p2[0], 2) + Math.pow(p1[1] - p2[1], 2));
+        // Component Wrapper to ensure Lucide is ready
+        const Icon = ({ name, size = 24, className = "", strokeWidth = 2, fill = "none" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide && iconRef.current) {
+                    window.lucide.createIcons({
+                        attrs: { "stroke-width": strokeWidth, "fill": fill },
+                        nameAttr: "data-lucide",
+                        icons: { [name]: window.lucide.icons[name] }
+                    });
+                }
+            }, [name, size, className, strokeWidth, fill]);
+            return <i data-lucide={name} style={{ width: size, height: size }} className={className}></i>;
         };
 
         function App() {
             const [user, setUser] = useState(null);
             const [userProfile, setUserProfile] = useState(null);
-            const [activeTab, setActiveTab] = useState('map'); 
-            const [onboardingStep, setOnboardingStep] = useState(0); 
-            const [isLoggingIn, setIsLoggingIn] = useState(false);
-            
-            const [isTracking, setIsTracking] = useState(false);
-            const [currentPath, setCurrentPath] = useState([]);
+            const [onboardingStep, setOnboardingStep] = useState(0); // 0: Login, 1: Profile, 2: Permissions, 3: App
+            const [activeTab, setActiveTab] = useState('map');
+            const [loading, setLoading] = useState(true);
+
             const [userLocation, setUserLocation] = useState(DEFAULT_COORDS);
             const [territories, setTerritories] = useState([]);
             const [moments, setMoments] = useState([]);
-            const [isNearStart, setIsNearStart] = useState(false);
-            const [locationError, setLocationError] = useState(null);
-            const [isVirtualMode, setIsVirtualMode] = useState(false);
-            const [isLocating, setIsLocating] = useState(false);
+            const [isTracking, setIsTracking] = useState(false);
+            const [currentPath, setCurrentPath] = useState([]);
 
             const mapContainerRef = useRef(null);
             const mapInstance = useRef(null);
-            const layersRef = useRef({
-                userMarker: null,
-                pathLine: null,
-                previewPolygon: null,
-                territoryLayers: []
-            });
 
-            // --- 1. Auth Listener ---
+            // Auth Management
             useEffect(() => {
-                const unsubscribe = onAuthStateChanged(auth, async (u) => {
+                const unsub = auth.onAuthStateChanged(async (u) => {
                     if (u) {
                         setUser(u);
-                        const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', u.uid);
-                        onSnapshot(userRef, (docSnap) => {
-                            if (docSnap.exists()) {
-                                setUserProfile(docSnap.data());
-                                setOnboardingStep(3); 
+                        const userRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').doc(u.uid);
+                        userRef.onSnapshot((doc) => {
+                            if (doc.exists) {
+                                setUserProfile(doc.data());
+                                setOnboardingStep(3);
                             } else {
                                 setUserProfile({ newUser: true });
-                                if (onboardingStep === 0) setOnboardingStep(1);
+                                setOnboardingStep(1);
                             }
+                            setLoading(false);
                         });
                     } else {
                         setUser(null);
                         setOnboardingStep(0);
+                        setLoading(false);
                     }
                 });
-                return () => unsubscribe();
+                return () => unsub();
             }, []);
 
-            const handleSocialLogin = async () => {
-                setIsLoggingIn(true);
-                try {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                } catch (err) {
-                    console.error("Auth error:", err);
-                } finally {
-                    setIsLoggingIn(false);
-                }
-            };
-
-            // --- 2. Real-time Listeners ---
+            // Data Streams
             useEffect(() => {
-                if (!user || !userProfile || userProfile.newUser || onboardingStep < 3) return;
-
-                const unsubT = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'territories'), 
-                    (snap) => setTerritories(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-                );
-                const unsubM = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'moments'), 
-                    (snap) => {
-                        const sorted = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => b.timestamp - a.timestamp);
-                        setMoments(sorted);
-                    }
-                );
+                if (onboardingStep < 3) return;
+                const unsubT = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('territories')
+                    .onSnapshot(s => setTerritories(s.docs.map(d => ({id: d.id, ...d.data()}))));
+                const unsubM = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('moments')
+                    .onSnapshot(s => setMoments(s.docs.map(d => ({id: d.id, ...d.data()})).sort((a,b)=>b.timestamp - a.timestamp)));
                 return () => { unsubT(); unsubM(); };
-            }, [user, userProfile, onboardingStep]);
+            }, [onboardingStep]);
 
-            // --- 3. Leaflet Map Logic ---
+            // Map Controller
             useEffect(() => {
-                if (!mapContainerRef.current || onboardingStep < 3 || activeTab !== 'map') return;
-                
+                if (activeTab !== 'map' || onboardingStep < 3 || !mapContainerRef.current) return;
                 const L = window.L;
                 if (!mapInstance.current) {
-                    const map = L.map(mapContainerRef.current, { zoomControl: false }).setView(userLocation, 16);
-                    L.tileLayer(MAP_TILE_URL).addTo(map);
-                    mapInstance.current = map;
-
-                    layersRef.current.userMarker = L.circleMarker(userLocation, {
-                        radius: 12, color: '#fff', weight: 4, fillColor: '#6366f1', fillOpacity: 1
-                    }).addTo(map);
-
-                    layersRef.current.pathLine = L.polyline([], { color: '#6366f1', weight: 5, dashArray: '1, 10' }).addTo(map);
-                    layersRef.current.previewPolygon = L.polygon([], { color: '#6366f1', fillColor: '#6366f1', fillOpacity: 0.15, weight: 0 }).addTo(map);
+                    mapInstance.current = L.map(mapContainerRef.current, { zoomControl: false }).setView(userLocation, 16);
+                    L.tileLayer(MAP_TILE_URL).addTo(mapInstance.current);
                 }
-
                 return () => {
                     if (mapInstance.current) {
                         mapInstance.current.remove();
@@ -167,263 +132,148 @@
                 };
             }, [activeTab, onboardingStep]);
 
-            useEffect(() => {
-                if (!mapInstance.current) return;
-                const L = window.L;
-                layersRef.current.userMarker.setLatLng(userLocation);
-                mapInstance.current.panTo(userLocation, { animate: true });
-                layersRef.current.pathLine.setLatLngs(isTracking ? currentPath : []);
-                layersRef.current.previewPolygon.setLatLngs(isTracking && currentPath.length > 2 ? [...currentPath, currentPath[0]] : []);
-
-                layersRef.current.territoryLayers.forEach(l => mapInstance.current.removeLayer(l));
-                layersRef.current.territoryLayers = territories.map(t => {
-                    const isOwner = t.owners?.includes(user?.uid);
-                    return L.polygon(t.path, {
-                        color: isOwner ? '#10b981' : t.color, fillColor: isOwner ? '#10b981' : t.color, fillOpacity: 0.35, weight: isOwner ? 4 : 2
-                    }).addTo(mapInstance.current);
-                });
-            }, [userLocation, currentPath, territories, isTracking]);
-
-            // --- 4. Handlers ---
-            const requestPermissions = () => {
-                setIsLocating(true);
-                setLocationError(null);
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(
-                        (pos) => {
-                            setUserLocation([pos.coords.latitude, pos.coords.longitude]);
-                            setOnboardingStep(3);
-                            setIsLocating(false);
-                        },
-                        (err) => {
-                            setLocationError("GPS access required for real-world tracking. Use Virtual Mode as alternative.");
-                            setIsLocating(false);
-                        },
-                        { timeout: 8000, enableHighAccuracy: true }
-                    );
-                } else {
-                    setLocationError("Geolocation not supported.");
-                    setIsLocating(false);
-                }
-            };
+            const handleLogin = () => auth.signInAnonymously();
 
             const handleFinishProfile = async (e) => {
                 e.preventDefault();
                 const fd = new FormData(e.target);
                 const profile = {
-                    uid: user.uid,
-                    displayName: fd.get('name'),
-                    handle: fd.get('handle').toLowerCase().replace(/\s/g, ''),
-                    bio: fd.get('bio'),
-                    level: 1, xp: 0, followers: [], following: [], timestamp: Date.now()
+                    uid: user.uid, displayName: fd.get('name'), handle: fd.get('handle').toLowerCase().replace(/\s/g, ''),
+                    bio: fd.get('bio'), level: 1, xp: 0, timestamp: Date.now()
                 };
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid), profile);
+                await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('users').doc(user.uid).set(profile);
                 setOnboardingStep(2);
             };
 
-            const handleStart = () => { setCurrentPath([userLocation]); setIsTracking(true); };
+            if (loading) return <div className="h-screen bg-black flex items-center justify-center"><Icon name="Zap" className="text-indigo-600 animate-pulse" size={64} /></div>;
 
-            const handleClaim = async () => {
-                if (currentPath.length < 5 || !user) return;
-                const territoryData = {
-                    userId: user.uid, userName: userProfile.displayName, path: [...currentPath, currentPath[0]],
-                    color: `hsl(${Math.random() * 360}, 75%, 60%)`, timestamp: Date.now(), owners: [user.uid]
-                };
-                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'territories'), territoryData);
-                setIsTracking(false); setCurrentPath([]); setIsNearStart(false);
-            };
-
-            const simulateMovement = (dir) => {
-                const step = 0.00015;
-                let [lat, lng] = userLocation;
-                if (dir === 'N') lat += step; if (dir === 'S') lat -= step;
-                if (dir === 'E') lng += step; if (dir === 'W') lng -= step;
-                const newPos = [lat, lng];
-                setUserLocation(newPos);
-                if (isTracking) {
-                    setCurrentPath(prev => {
-                        const updated = [...prev, newPos];
-                        if (updated.length > 5) setIsNearStart(calculateDistance(newPos, updated[0]) < MIN_DISTANCE_TO_CLAIM);
-                        return updated;
-                    });
-                }
-            };
-
-            const uploadMoment = async (e) => {
-                e.preventDefault();
-                const file = e.target.photo.files[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onloadend = async () => {
-                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'moments'), {
-                        userId: user.uid, userName: userProfile.displayName, userHandle: userProfile.handle,
-                        caption: e.target.caption.value, image: reader.result, timestamp: Date.now(), likes: []
-                    });
-                    setActiveTab('feed');
-                };
-                reader.readAsDataURL(file);
-            };
-
-            // --- Render Logic ---
+            // Step 0: Login
             if (onboardingStep === 0) return (
-                <div className="h-screen bg-neutral-950 text-white flex flex-col items-center justify-center p-8 space-y-12">
+                <div className="h-screen bg-neutral-950 text-white flex flex-col items-center justify-center p-8 space-y-12 animate-in fade-in duration-1000">
                     <div className="text-center space-y-4">
-                        <div className="size-24 bg-indigo-600 rounded-[2rem] mx-auto flex items-center justify-center shadow-2xl shadow-indigo-600/30">
-                            <Zap size={56} fill="white" />
+                        <div className="size-24 bg-indigo-600 rounded-[2rem] mx-auto flex items-center justify-center shadow-2xl">
+                            <Icon name="Zap" size={56} fill="white" />
                         </div>
-                        <h1 className="text-5xl font-black tracking-tighter italic uppercase leading-none">RunRealm</h1>
-                        <p className="text-neutral-500 max-w-xs mx-auto">Claim territories. Follow runners. Conquer the world.</p>
+                        <h1 className="text-5xl font-black italic uppercase leading-none">RunRealm</h1>
+                        <p className="text-neutral-500 max-w-xs mx-auto font-medium">Claim territories. Connect with runners. Conquer the world.</p>
                     </div>
                     <div className="w-full max-w-xs space-y-4">
-                        <button onClick={handleSocialLogin} disabled={isLoggingIn} className="w-full bg-white text-black py-4 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50">
-                            {isLoggingIn ? <Loader2 className="animate-spin" /> : <Mail size={18} />} Login with Gmail
+                        <button onClick={handleLogin} className="w-full bg-white text-black py-5 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-3 active:scale-95 transition-all">
+                             Login with Gmail
                         </button>
-                        <button onClick={handleSocialLogin} disabled={isLoggingIn} className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-3 active:scale-95 shadow-xl disabled:opacity-50">
-                             {isLoggingIn ? <Loader2 className="animate-spin" /> : <Phone size={18} />} Login with Phone
+                        <button onClick={handleLogin} className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black uppercase text-xs tracking-widest flex items-center justify-center gap-3 shadow-xl active:scale-95 transition-all">
+                             Login with Phone
                         </button>
                     </div>
                 </div>
             );
 
+            // Step 1: Profile
             if (onboardingStep === 1) return (
-                <div className="h-screen bg-neutral-950 text-white p-8 flex flex-col justify-center">
-                    <div className="mb-8">
-                        <span className="text-indigo-500 font-black text-xs uppercase tracking-[0.3em]">Step 01 / 02</span>
-                        <h2 className="text-4xl font-black italic uppercase tracking-tighter mt-2 leading-none">Your Identity</h2>
-                    </div>
+                <div className="h-screen bg-neutral-950 text-white p-8 flex flex-col justify-center animate-in slide-in-from-right duration-500">
+                    <h2 className="text-4xl font-black italic uppercase tracking-tighter mb-8 leading-none">Initialize Identity</h2>
                     <form onSubmit={handleFinishProfile} className="space-y-6">
-                        <div className="space-y-4">
-                            <input name="name" placeholder="Runner Name" required className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:border-indigo-500" />
-                            <input name="handle" placeholder="@realm_handle" required className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 focus:outline-none focus:border-indigo-500" />
-                            <textarea name="bio" placeholder="Your conquest bio..." className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 h-28 focus:outline-none focus:border-indigo-500" />
-                        </div>
-                        <button type="submit" className="w-full bg-indigo-600 py-5 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-2 active:scale-95">Next Step <ChevronRight size={20} /></button>
+                        <input name="name" placeholder="Runner Name" required className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:border-indigo-500" />
+                        <input name="handle" placeholder="@realm_handle" required className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-5 focus:outline-none focus:border-indigo-500" />
+                        <textarea name="bio" placeholder="Mission Bio..." className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-5 h-32 focus:outline-none focus:border-indigo-500 resize-none" />
+                        <button type="submit" className="w-full bg-indigo-600 py-5 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-2 active:scale-95">Complete Setup <Icon name="ChevronRight" size={20} /></button>
                     </form>
                 </div>
             );
 
+            // Step 2: Permissions
             if (onboardingStep === 2) return (
-                <div className="h-screen bg-neutral-950 text-white p-8 flex flex-col justify-center text-center">
-                    <span className="text-emerald-500 font-black text-xs uppercase tracking-[0.3em] mb-2">Step 02 / 02</span>
-                    <h2 className="text-3xl font-black italic uppercase tracking-tighter leading-none mb-10">Sensor Sync</h2>
-                    {locationError && <div className="bg-red-500/10 border border-red-500/20 p-5 rounded-3xl mb-8 flex items-start gap-4 text-left">
-                        <AlertTriangle className="text-red-500" /> <p className="text-xs text-red-400 font-bold uppercase tracking-wide">{locationError}</p>
-                    </div>}
-                    <div className="flex flex-col gap-4">
-                        <button onClick={requestPermissions} disabled={isLocating} className="w-full bg-indigo-600 py-5 rounded-[1.5rem] font-black uppercase tracking-widest shadow-2xl active:scale-95 flex items-center justify-center gap-3 disabled:opacity-50">
-                            {isLocating ? <Loader2 className="animate-spin" /> : <Shield size={20} />} Authorize GPS
-                        </button>
-                        <button onClick={startInVirtualMode} className="w-full bg-neutral-900 border border-white/10 py-5 rounded-[1.5rem] font-black uppercase text-[10px] tracking-[0.2em] active:scale-95 flex items-center justify-center gap-2">
-                            <Globe size={18} /> Enter in Virtual Mode
-                        </button>
+                <div className="h-screen bg-neutral-950 text-white p-10 flex flex-col justify-center text-center space-y-10">
+                    <div className="space-y-4">
+                        <h2 className="text-3xl font-black italic uppercase tracking-tighter">Sensor Sync</h2>
+                        <p className="text-neutral-500 text-sm">Real-time GPS mapping is essential for territory conquest.</p>
+                    </div>
+                    <div className="space-y-4">
+                        <button onClick={()=>setOnboardingStep(3)} className="w-full bg-indigo-600 py-5 rounded-3xl font-black uppercase tracking-widest shadow-2xl active:scale-95">Authorize Tracking</button>
+                        <button onClick={()=>setOnboardingStep(3)} className="w-full bg-neutral-900 border border-white/10 py-5 rounded-3xl font-black uppercase text-[10px] tracking-[0.2em] active:scale-95 flex items-center justify-center gap-2"><Icon name="Globe" size={18} /> Virtual Mode</button>
                     </div>
                 </div>
             );
 
+            // Step 3: App
             return (
-                <div className="flex flex-col h-screen bg-neutral-950 overflow-hidden select-none">
-                    <header className="p-4 bg-neutral-900/90 border-b border-white/5 flex justify-between items-center z-50">
+                <div className="flex flex-col h-screen bg-neutral-950 text-white overflow-hidden">
+                    <header className="p-4 bg-neutral-900/90 border-b border-white/5 flex justify-between items-center z-50 shadow-2xl">
                         <div className="flex items-center gap-2">
-                            <div className="p-1.5 bg-indigo-600 rounded-lg"><Zap size={18} fill="white" /></div>
-                            <h1 className="font-black italic text-xl uppercase tracking-tighter">RunRealm</h1>
+                            <div className="p-1.5 bg-indigo-600 rounded-lg"><Icon name="Zap" size={18} fill="white" /></div>
+                            <h1 className="font-black italic text-xl uppercase tracking-tighter leading-none">RunRealm</h1>
                         </div>
-                        <div className="flex items-center gap-3 bg-white/5 pl-3 pr-1 py-1 rounded-full border border-white/10">
-                            <span className="text-[10px] font-black text-indigo-400">Lv.{userProfile?.level || 1}</span>
-                            <div className="size-8 bg-gradient-to-br from-indigo-500 to-purple-700 rounded-full flex items-center justify-center text-xs font-black">{userProfile?.displayName?.[0] || "?"}</div>
-                        </div>
+                        <div className="size-9 bg-gradient-to-br from-indigo-500 to-purple-700 rounded-full flex items-center justify-center text-sm font-black border-2 border-white/10">{userProfile?.displayName?.[0] || "?"}</div>
                     </header>
 
                     <main className="flex-1 relative overflow-y-auto">
                         {activeTab === 'map' && <div className="h-full relative">
                             <div ref={mapContainerRef} className="h-full w-full opacity-90" />
-                            <div className="absolute top-4 left-4 z-[1000] p-4 bg-black/70 rounded-3xl border border-white/10 flex gap-4 shadow-2xl backdrop-blur-md">
-                                <div className="text-center"><p className="text-[8px] text-neutral-500 font-black uppercase">Global</p><p className="font-mono font-black text-indigo-400">{territories.length}</p></div>
+                            <div className="absolute top-4 left-4 z-[1000] p-4 bg-black/70 rounded-[2rem] border border-white/10 flex gap-4 shadow-2xl backdrop-blur-md">
+                                <div className="text-center"><p className="text-[8px] text-neutral-500 font-black uppercase mb-1">Global</p><p className="font-mono font-black text-indigo-400">{territories.length}</p></div>
                                 <div className="w-px h-8 bg-white/10" />
-                                <div className="text-center"><p className="text-[8px] text-neutral-500 font-black uppercase">Path</p><p className="font-mono font-black text-emerald-400">{(currentPath.length * 0.05).toFixed(0)}m</p></div>
+                                <div className="text-center"><p className="text-[8px] text-neutral-500 font-black uppercase mb-1">Session</p><p className="font-mono font-black text-emerald-400">{(currentPath.length * 0.05).toFixed(0)}m</p></div>
                             </div>
-                            
-                            {isVirtualMode && <div className="absolute top-4 right-4 z-[1000] bg-black/70 p-2 rounded-2xl border border-white/10 grid grid-cols-3 gap-1 shadow-2xl">
-                                <div/><button onClick={()=>simulateMovement('N')} className="bg-white/10 p-2 rounded-lg text-xs font-bold hover:bg-indigo-600">N</button><div/>
-                                <button onClick={()=>simulateMovement('W')} className="bg-white/10 p-2 rounded-lg text-xs font-bold hover:bg-indigo-600">W</button>
-                                <button onClick={()=>simulateMovement('S')} className="bg-white/10 p-2 rounded-lg text-xs font-bold hover:bg-indigo-600">S</button>
-                                <button onClick={()=>simulateMovement('E')} className="bg-white/10 p-2 rounded-lg text-xs font-bold hover:bg-indigo-600">E</button>
-                            </div>}
-
                             <div className="absolute bottom-10 left-0 right-0 z-[1000] flex flex-col items-center gap-6">
-                                {isNearStart && isTracking && <div className="bg-emerald-500 px-6 py-2 rounded-full text-[10px] font-black animate-bounce shadow-xl uppercase tracking-widest border border-white/20">Loop Closed • Claim Domain</div>}
-                                {!isTracking ? <button onClick={handleStart} className="bg-indigo-600 p-9 rounded-[2rem] shadow-2xl active:scale-95"><Play fill="white" size={36} /></button> :
-                                <div className="flex gap-4"><button onClick={()=>{setIsTracking(false);setCurrentPath([]);}} className="bg-neutral-800 p-6 rounded-3xl"><Square fill="white" size={24}/></button>
-                                <button onClick={handleClaim} disabled={currentPath.length < 5} className={`px-12 py-6 rounded-[2rem] font-black text-sm tracking-widest border-b-4 transition-all uppercase ${currentPath.length >= 5 ? 'bg-emerald-500 border-emerald-700' : 'bg-neutral-800 grayscale cursor-not-allowed opacity-50'}`}>Claim Conquest</button></div>}
+                                <button onClick={() => setIsTracking(!isTracking)} className={`${isTracking ? 'bg-red-600' : 'bg-indigo-600'} p-10 rounded-[2.5rem] shadow-2xl active:scale-90 transition-all`}>
+                                    <Icon name={isTracking ? "Square" : "Play"} fill="white" size={32} />
+                                </button>
                             </div>
                         </div>}
 
-                        {activeTab === 'feed' && <div className="p-5 space-y-6 pb-24">
-                            <div className="flex justify-between items-center"><h2 className="text-3xl font-black italic uppercase tracking-tighter">Feed</h2><button onClick={()=>setActiveTab('upload')} className="bg-indigo-600 p-3 rounded-2xl shadow-lg shadow-indigo-600/20"><PlusSquare size={24}/></button></div>
+                        {activeTab === 'feed' && <div className="p-6 space-y-6 pb-32">
+                            <div className="flex justify-between items-center"><h2 className="text-3xl font-black italic uppercase tracking-tighter leading-none">Moments</h2><button onClick={()=>setActiveTab('upload')} className="bg-indigo-600 p-3 rounded-2xl shadow-lg active:scale-90"><Icon name="PlusSquare" size={24}/></button></div>
                             {moments.map(m => <div key={m.id} className="bg-neutral-900 rounded-[2.5rem] overflow-hidden border border-white/5 shadow-2xl">
-                                <div className="p-5 flex items-center justify-between">
-                                    <div className="flex items-center gap-3"><div className="size-10 bg-indigo-600 rounded-2xl flex items-center justify-center font-black">{m.userName?.[0]}</div><div><p className="text-sm font-black uppercase">{m.userName}</p><p className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">@{m.userHandle}</p></div></div>
+                                <div className="p-5 flex items-center gap-3">
+                                    <div className="size-10 bg-indigo-600 rounded-2xl flex items-center justify-center font-black">{m.userName?.[0]}</div>
+                                    <div><p className="text-sm font-black uppercase leading-none">{m.userName}</p><p className="text-[10px] text-indigo-400 font-bold mt-1 tracking-widest uppercase">@{m.userHandle}</p></div>
                                 </div>
                                 <img src={m.image} className="w-full aspect-square object-cover" />
                                 <div className="p-6 space-y-4">
-                                    <div className="flex gap-6"><Heart size={26}/><MessageSquare size={26}/><Send size={26} className="ml-auto"/></div>
-                                    <p className="text-sm"><span className="font-black mr-2 uppercase italic text-[12px]">@{m.userHandle}</span><span className="text-neutral-400">{m.caption}</span></p>
+                                    <div className="flex gap-6"><Icon name="Heart" size={26}/><Icon name="MessageSquare" size={26}/><Icon name="Send" size={26} className="ml-auto"/></div>
+                                    <p className="text-sm"><span className="font-black mr-2 uppercase italic text-xs">@{m.userHandle}</span><span className="text-neutral-400">{m.caption}</span></p>
                                 </div>
                             </div>)}
                         </div>}
 
-                        {activeTab === 'upload' && <div className="p-8"><form onSubmit={uploadMoment} className="space-y-8">
-                            <div className="aspect-square bg-white/5 border-2 border-dashed border-white/10 rounded-[2.5rem] flex flex-col items-center justify-center relative overflow-hidden group cursor-pointer hover:border-indigo-500/50">
-                                <input type="file" name="photo" accept="image/*" required className="absolute inset-0 opacity-0 cursor-pointer z-10" />
-                                <Camera size={48} className="text-neutral-600 group-hover:text-indigo-500" />
-                                <p className="text-[10px] text-neutral-500 font-black mt-4 uppercase tracking-[0.3em]">Select Conquest Moment</p>
+                        {activeTab === 'ranks' && <div className="p-8 space-y-8 pb-32">
+                            <h2 className="text-3xl font-black italic uppercase tracking-tighter leading-none">Global Overlords</h2>
+                            <div className="space-y-4">
+                                {[...new Set(territories.map(t => t.userName))].map((name, i) => (
+                                    <div key={name} className="bg-neutral-900 p-6 rounded-[2rem] border border-white/5 flex items-center justify-between">
+                                        <div className="flex items-center gap-5">
+                                            <span className="font-black text-2xl text-indigo-600 w-8">{i+1}</span>
+                                            <p className="font-black uppercase tracking-tight">{name}</p>
+                                        </div>
+                                        <Icon name="Trophy" size={20} className="text-amber-500" />
+                                    </div>
+                                ))}
                             </div>
-                            <textarea name="caption" placeholder="Describe the mission..." required className="w-full bg-white/5 border border-white/10 rounded-[1.5rem] px-6 py-5 h-32 focus:outline-none focus:border-indigo-500 transition-all font-medium" />
-                            <button type="submit" className="w-full bg-indigo-600 py-5 rounded-2xl font-black uppercase tracking-widest shadow-xl active:scale-95 flex items-center justify-center gap-3 text-sm"><Zap size={20} fill="white" /> Broadcast Moment</button>
-                        </form></div>}
-
-                        {activeTab === 'leaderboard' && <div className="p-6 space-y-6 pb-24">
-                            <div className="flex justify-between items-center"><h2 className="text-3xl font-black italic uppercase tracking-tighter">Overlords</h2><Trophy className="text-amber-500" size={32}/></div>
-                            <div className="space-y-3">{territories.reduce((acc, curr) => {
-                                const name = curr.userName || "Unknown";
-                                const existing = acc.find(a => a.name === name);
-                                if (existing) existing.count++; else acc.push({ name, count: 1 });
-                                return acc;
-                            }, []).sort((a,b)=>b.count-a.count).map((p, i) => <div key={i} className="bg-neutral-900 p-5 rounded-[2rem] border border-white/5 flex justify-between items-center group">
-                                <div className="flex items-center gap-5"><span className={`font-black text-2xl w-8 text-center ${i===0?'text-amber-400':i===1?'text-neutral-400':i===2?'text-orange-700':'text-neutral-800'}`}>{i+1}</span><div><p className="font-black uppercase group-hover:text-indigo-400">{p.name}</p><p className="text-[10px] text-neutral-500 uppercase tracking-widest font-bold mt-1">{p.count} Domains Captured</p></div></div>
-                                <div className="size-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-[10px] font-black text-neutral-500">{p.count}</div>
-                            </div>)}</div>
                         </div>}
 
                         {activeTab === 'profile' && <div className="p-10 flex flex-col items-center space-y-8 pb-32">
                             <div className="size-32 bg-gradient-to-br from-indigo-500 via-purple-600 to-indigo-700 rounded-[3rem] flex items-center justify-center text-5xl font-black shadow-2xl border-4 border-white/10">{userProfile?.displayName?.[0]}</div>
-                            <div className="text-center space-y-2"><h2 className="text-3xl font-black uppercase italic tracking-tighter">{userProfile?.displayName}</h2><p className="text-indigo-500 font-black uppercase text-xs tracking-[0.4em] italic">@{userProfile?.handle}</p></div>
-                            <div className="flex gap-10 pt-4 text-center">
-                                <div><p className="text-xl font-black italic">{userProfile?.followers?.length || 0}</p><p className="text-[8px] text-neutral-500 uppercase font-black tracking-[0.2em] mt-2">Followers</p></div>
-                                <div><p className="text-xl font-black italic">{userProfile?.level || 1}</p><p className="text-[8px] text-neutral-500 uppercase font-black tracking-[0.2em] mt-2">Level</p></div>
-                                <div><p className="text-xl font-black italic">{territories.filter(t=>t.userId===user?.uid).length}</p><p className="text-[8px] text-neutral-500 uppercase font-black tracking-[0.2em] mt-2">Domains</p></div>
-                            </div>
-                            <div className="w-full bg-white/5 p-8 rounded-[2.5rem] border border-white/10 shadow-inner italic text-neutral-400 text-sm">"{userProfile?.bio || "No mission statement established."}"</div>
-                            <button onClick={()=>auth.signOut()} className="w-full py-5 border border-red-500/20 text-red-500 rounded-3xl text-[10px] font-black uppercase tracking-[0.4em] active:scale-95 transition-all">Terminate Connection</button>
+                            <div className="text-center space-y-2"><h2 className="text-3xl font-black uppercase italic tracking-tighter">{userProfile?.displayName}</h2><p className="text-indigo-500 font-black uppercase text-xs tracking-[0.4em] italic leading-none">@{userProfile?.handle}</p></div>
+                            <div className="w-full bg-white/5 p-8 rounded-[2rem] border border-white/10 italic text-neutral-400 text-sm text-center">"{userProfile?.bio || "Runner of the Realm."}"</div>
+                            <button onClick={()=>auth.signOut()} className="w-full py-5 border border-red-500/20 text-red-500 rounded-3xl text-[10px] font-black uppercase tracking-[0.4em] active:scale-95 transition-all">Sign Out</button>
                         </div>}
                     </main>
 
                     <footer className="bg-neutral-900 border-t border-white/5 px-8 pt-4 pb-12 flex justify-between items-center z-50">
-                        <NavBtn icon={<MapIcon />} active={activeTab === 'map'} onClick={() => setActiveTab('map')} />
-                        <NavBtn icon={<Users />} active={activeTab === 'feed'} onClick={() => setActiveTab('feed')} />
-                        <NavBtn icon={<Trophy />} active={activeTab === 'leaderboard'} onClick={() => setActiveTab('leaderboard')} />
-                        <NavBtn icon={<User />} active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} />
+                        <NavBtn active={activeTab === 'map'} onClick={() => setActiveTab('map')} icon="Map" />
+                        <NavBtn active={activeTab === 'feed'} onClick={() => setActiveTab('feed')} icon="Users" />
+                        <NavBtn active={activeTab === 'ranks'} onClick={() => setActiveTab('ranks')} icon="Trophy" />
+                        <NavBtn active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} icon="User" />
                     </footer>
                 </div>
             );
         }
 
-        function NavBtn({ icon, active, onClick }) {
-            return (
-                <button onClick={onClick} className={`p-4 rounded-[1.5rem] transition-all active:scale-125 ${active ? 'bg-indigo-600/20 text-indigo-500 shadow-lg scale-110' : 'text-neutral-600 hover:text-neutral-400'}`}>
-                    {React.cloneElement(icon, { size: 24, strokeWidth: active ? 3 : 2 })}
-                </button>
-            );
-        }
+        const NavBtn = ({ active, onClick, icon }) => (
+            <button onClick={onClick} className={`p-4 rounded-2xl transition-all duration-300 ${active ? 'bg-indigo-600/20 text-indigo-500 shadow-lg scale-110' : 'text-neutral-600'}`}>
+                <Icon name={icon} size={28} strokeWidth={active ? 3 : 2} />
+            </button>
+        );
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
